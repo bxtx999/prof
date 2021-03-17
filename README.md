@@ -1,187 +1,136 @@
 # Prof
 
-Self-contained C/C++ profiler library for Linux.
+Self-contained C/C++ profiler library for Linux
 
-Prof offers a quick way to measure performance events (CPU clock cycles,
-cache misses, branch mispredictions, etc.) of C/C++ code snippets. Prof is
-just a wrapper around the `perf_event_open` system call, its main goal is to
-be easy to setup and painless to use for targeted optimizations, namely, when
-the hot spot has already been identified. In no way Prof is a replacement for
-a fully-fledged profiler like perf, gprof, callgrind, etc.
+## 准备
 
-Please be aware that Prof uses `__attribute__((constructor))` to be as more
-straightforward to setup as possible, so it cannot be included more than
-once.
+- 安装`perf`相关内容。
 
-## Examples
+    ```text
+    $ sudo apt install linux-tools-common linux-tools-generic linux-tools-`uname -r`
+    ```
 
-### Minimal
+- 设置`kernel`中的`perf_event_paranoid`：
 
-The following snippet prints the rough number of CPU clock cycles spent in
-executing the code between the two Prof calls:
+    ```text
+    echo 1 | sudo tee /proc/sys/kernel/perf_event_paranoid
+    ```
+  
+## Prof API
 
-```c
-#include "prof.h"
+1. `PROF_START()`
 
-int main()
-{
-    PROF_START();
-    // slow code goes here...
-    PROF_STDOUT();
-}
-```
+    重置计数器并且开始（重新开始）事件计数。
+   
+    在包含这个文件之前，通过设置`PROF_EVENT_LIST`宏来指定要监控的事件，使其成为`PROF_EVENT_*`调用的列表；默认为计算CPU时钟周期数。
+     
+    如果在包含这个文件之前定义了`PROF_USER_EVENTS_ONLY`宏，那么内核和hypervisor事件将被排除在计数之外。
 
-### Custom options
+2. `PROF_EVENT(type, config)`
 
-The following snippet instead counts both read and write faults of the level
-1 data cache that occur in the userland code between the two Prof calls:
+    指定一个要监控的事件，类型和配置在 `perf_event_open` 系统调用的文档中定义。
 
-```c
-#include <stdio.h>
+3. `PROF_EVENT_HW(config)`
 
-#define PROF_USER_EVENTS_ONLY
-#define PROF_EVENT_LIST \
-    PROF_EVENT_CACHE(L1D, READ, MISS) \
-    PROF_EVENT_CACHE(L1D, WRITE, MISS)
-#include "prof.h"
+    与`PROF_EVENT`相同，但适用于硬件事件；`config`中必须省略`PERF_COUNT_HW_`前缀。
+   
+4. `PROF_EVENT_SW(config)`
 
-int main()
-{
-    uint64_t faults[2] = { 0 };
+    与`PROF_EVENT`相同，但适用于硬件事件；`config`中必须省略`PERF_COUNT_SW_`前缀。
 
-    PROF_START();
-    // slow code goes here...
-    PROF_DO(faults[index] += counter);
+5. `PROF_EVENT_CACHE(cache, op, result)`
 
-    // fast or uninteresting code goes here...
+    与`PROF_EVENT`相同，但用于缓存事件。
+    前缀`PERF_COUNT_HW_CACHE_`、`PERF_COUNT_HW_CACHE_OP_`和`PERF_COUNT_HW_CACHE_RESULT_`必须分别省略`cache`、`OP`和`result`。
+    同样，`cache`、`op`和`result`在`perf_event_open`系统调用的文档中定义。
 
-    PROF_START();
-    // slow code goes here...
-    PROF_DO(faults[index] += counter);
+6. `PROF_STOP()`
 
-    printf("Total L1 faults: R = %lu; W = %lu\n", faults[0], faults[1]);
-}
-```
+    停止对事件的计数。然后可以使用`PROF_COUNTERS`访问计数器数组。
 
-## Installation
+7. `PROF_COUNTERS`
 
-Just include `prof.h`. Here is a quick way to fetch the latest version:
+    访问计数器数组。计数器的顺序与`PROF_EVENT_LIST`中定义的事件相同。这个数组的元素是64位无符号整数。
 
-    wget -q https://raw.githubusercontent.com/cyrus-and/prof/master/prof.h
+8. `PROF_DO(block)`
 
-## Setup
+    停止对事件的计数，对每个事件执行`block`提供的代码。
+    
+    在代码中：
+    
+    - `index`指的是`PROF_COUNTERS`定义的计数器数组中的事件位置索引。
+    - `counter`是计数器的实际值。
+    - `index`是一个64位无符号整数。
 
-Since Prof uses `perf_event_open` make sure to have the permission to access
-the performance counters: either run the program as superuser (discouraged)
-or set the value of `perf_event_paranoid` appropriately, for example:
+9. `PROF_CALL(callback)`
 
-```console
-$ echo 1 | sudo tee /proc/sys/kernel/perf_event_paranoid
-```
+    与`PROF_DO`相同，只是`callback`是一个可调用对象的名称(例如一个函数)。
+    
+    对于每一个事件，它的两个参数`index`和`counter`被调用。
 
-Optionally make it permanent with:
+10. `PROF_FILE(file)`
 
-```console
-$ echo 'kernel.perf_event_paranoid=1' | sudo tee /etc/sysctl.d/local.conf
-```
+    停止收集对事件计数，并将与`PROF_EVENT_LIST`中事件相同的行数写入写入`file`(stdio.h 的 `FILE *`类型)。
+    
+    每一行都包含 `index` 和计数器（由`PROF_DO`定义），并由制表符分隔。如果只有一个事件，那么index会省略。
 
-See `man perf_event_open` for more information.
+11. `PROF_STDOUT()`
 
-## API
+    与 `PROF_FILE` 一样，不过`file`是`stdout`类型。
 
-### PROF_START()
+12 `PROF_STDERR()`
 
-Reset the counters and (re)start counting the events.
+    与 `PROF_FILE` 一样，不过`file`是`stderr`类型。
 
-The events to be monitored are specified by setting the `PROF_EVENT_LIST`
-macro before including this file to a list of `PROF_EVENT_*` invocations;
-defaults to counting the number CPU clock cycles.
+## 使用
 
-If the `PROF_USER_EVENTS_ONLY` macro is defined before including this file
-then kernel and hypervisor events are excluded from the count.
+1. Test:
 
-### PROF_EVENT(type, config)
+   ```shell
+   $ sudo ./header_test
 
-Specify an event to be monitored, `type` and `config` are defined in the
-documentation of the `perf_event_open` system call.
+   行优先耗时：0.008733 ms
+   列优先耗时：0.011547 ms
 
-### PROF_EVENT_HW(config)
+   20106146  # CPU cycles
 
-Same as `PROF_EVENT` but for hardware events; prefix `PERF_COUNT_HW_` must be
-omitted from `config`.
+   26545355  # CPU cycles
 
-### PROF_EVENT_SW(config)
+   ```
 
-Same as `PROF_EVENT` but for software events; prefix `PERF_COUNT_SW_` must be
-omitted from `config`.
+2. 测试其他事件
 
-### PROF_EVENT_CACHE(cache, op, result)
+   ```shell
+   $ sudo ./header_test_custom
+   行优先耗时：0.005951 ms
+   列优先耗时：0.007836 ms
+   Total L1 faults_slow: R = 33403890; W = 0
+   Total L1 faults_fast: R = 49791176; W = 0
+   ```
 
-Same as `PROF_EVENT` but for cache events; prefixes `PERF_COUNT_HW_CACHE_`,
-`PERF_COUNT_HW_CACHE_OP_` and `PERF_COUNT_HW_CACHE_RESULT_` must be omitted
-from `cache`, `op` and `result`, respectively. Again `cache`, `op` and
-`result` are defined in the documentation of the `perf_event_open` system
-call.
+## 其他
 
-### PROF_STOP()
+1. `perf_event_paranoid`
 
-Stop counting the events. The counter array can then be accessed with
-`PROF_COUNTERS`.
+   Controls use of the performance events system by unprivileged users (without `CAP_SYS_ADMIN`)
 
-### PROF_COUNTERS
+   - `-1`: Allow use of (almost) all events by all users Ignore mlock limit after `perf_event_mlock_kb` without `CAP_IPC_LOCK`
 
-Access the counter array. The order of counters is the same of the events
-defined in `PROF_EVENT_LIST`. Elements of this array are 64 bit unsigned
-integers.
+   - `>=0`：Disallow ftrace function tracepoint by users without `CAP_SYS_ADMIN` Disallow raw tracepoint access by users without `CAP_SYS_ADMIN`
 
-### PROF_DO(block)
+   - `>=1`：Disallow CPU event access by users without `CAP_SYS_ADMIN`
 
-Stop counting the events and execute the code provided by `block` for each
-event. Within `code`: `index` refers to the event position index in the
-counter array defined by `PROF_COUNTERS`; `counter` is the actual value of
-the counter. `index` is a 64 bit unsigned integer.
+   - `>=2`：Disallow kernel profiling by users without `CAP_SYS_ADMIN`
 
-### PROF_CALL(callback)
 
-Same as `PROF_DO` except that `callback` is the name of a *callable* object
-(e.g. a function) which, for each event, is be called with the two parameters
-`index` and `counter`.
+## 参考
 
-### PROF_FILE(file)
+1. https://github.com/cyrus-and/prof
 
-Stop counting the events and write to `file` (a stdio.h `FILE *`) as many
-lines as are events in `PROF_EVENT_LIST`. Each line contains `index` and
-`counter` (as defined by `PROF_DO`) separated by a tabulation character. If
-there is only one event then `index` is omitted.
+2. http://www.brendangregg.com/perf.html
 
-### PROF_STDOUT()
+3. https://perf.wiki.kernel.org/index.php/Main_Page
 
-Same as `PROF_LOG_FILE` except that `file` is `stdout`.
+4. https://perf.wiki.kernel.org/index.php/Tutorial
 
-### PROF_STDERR()
-
-Same as `PROF_LOG_FILE` except that `file` is `stderr`.
-
-## License
-
-Copyright (c) 2020 Andrea Cardaci <cyrus.and@gmail.com>
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-<!-- autogenerated from prof.h -->
+5. https://man7.org/linux/man-pages/man2/perf_event_open.2.html
