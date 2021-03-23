@@ -15,6 +15,12 @@ Self-contained C/C++ profiler library for Linux
     ```text
     echo 1 | sudo tee /proc/sys/kernel/perf_event_paranoid
     ```
+    
+- 拉取项目
+
+  ```text
+  $ git clone --recursive https://github.com/bxtx999/prof.git
+  ```
   
 ## Prof API
 
