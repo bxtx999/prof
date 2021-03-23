@@ -1,0 +1,3 @@
+[submodule "examples/ligra"]
+	path = examples/ligra
+	url = https://github.com/jshun/ligra.git
